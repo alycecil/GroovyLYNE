@@ -74,22 +74,28 @@ class Node {
 @TupleConstructor(includeSuperProperties=true) 
 @Canonical(excludes= 'neighbors')
 class CommonNode extends Node{
-    short count
+    short count = 0
     short hits
 }
 
 @TupleConstructor(includeSuperProperties=true) 
-@Canonical(excludes= 'neighbors')
+@Canonical(excludes= 'neighbors,otherRoot')
 class SingleNode extends Node {
     char type
     boolean start
+    def otherRoot
 }
 
 class Move {
-    def count
+    def count = 0
     def invalidatedBy
     def invalidates
     Node source, destination;
+
+    String toString(){
+        def s = "${this.class} between ($source(${source.x},${source.y})) "
+        s += "and ($destination (${destination.x},${destination.y}))"
+    }
 }
 
 class DiagonalMove extends Move {
@@ -174,10 +180,15 @@ def validate(world){
 
                 if(world[y][x].start){
 
-                    if(cnt[world[y][x].type]==null){
-                        cnt[world[y][x].type]=1
-                    }else if(cnt[world[y][x].type]==1){
-                        cnt[world[y][x].type]=2
+                    if(!cnt[world[y][x].type]){
+                        cnt[world[y][x].type]=[]
+                        cnt[world[y][x].type] << world[y][x]
+                    }else if(cnt[world[y][x].type].size==1){
+                        cnt[world[y][x].type] << world[y][x]
+                        //create cross link
+                        cnt[world[y][x].type][0].otherRoot =cnt[world[y][x].type][1]
+                        cnt[world[y][x].type][1].otherRoot =cnt[world[y][x].type][0]
+                        
                     }else{
                         throw IllegalStateException("too many end points for ${world[y][x].type}")
                     }
@@ -187,8 +198,12 @@ def validate(world){
     }
 
     cnt.each {
-        if(it.value == 1){
+        if(it.value.size != 2){
             throw new IllegalStateException("start without end for ${it.key}")
+        }else{
+            it.value.each{
+                println "Linked pairs : $it & ${it.otherRoot}"
+            }
         }
     }
 }
@@ -209,7 +224,7 @@ def createMoveBetween(Node me, Node it, world){
     
 }
 
-def fixDiagonals(Node node, world){
+def createInvalidationLinks(Node node, world){
     node?.moves?.each {
         move ->
         move.invalidates = []
@@ -254,6 +269,17 @@ def fixDiagonals(Node node, world){
                         move.invalidates << dm
                     }
                 }
+            }
+        }
+
+        //link root nodes
+        //TODO move up and make shared; if becomes performance issue.
+        if(me instanceof SingleNode && me.start){
+            println "CommonRoot[$me.type] : "
+            me.otherRoot.moves.each {
+                mv ->
+                println "     $mv"
+                move.invalidates << mv;
             }
         }
     }
@@ -302,7 +328,7 @@ def buildLinks(nodeList, world){
 
     nodeList.each {
         node ->
-        fixDiagonals(node, world)
+        createInvalidationLinks(node, world)
     }
     println "Total Moves in world $tot"
 }
@@ -332,6 +358,9 @@ def makeMove(Move move, movesMade, movesAvailable){
             movesAvailable.add(it);
         }
     }
+
+    move.count ++
+    move.destination.count ++
 }
 
 def unmakeMove(Move move, movesMade, movesAvailable){
@@ -354,6 +383,96 @@ def unmakeMove(Move move, movesMade, movesAvailable){
             movesAvailable << it
         }
 
+    }
+
+    move.destination.count --
+}
+
+
+def calcValidFirstMoves(nodeList){
+    def result = [] as Set
+
+    nodeList.each {
+        if(it instanceof SingleNode && it.start){
+            it.moves.each {
+                result << it
+            }
+        }
+    }
+
+    result
+}
+
+boolean hasWon(world, nodeList, movesMade, movesAvailable){
+    if(!movesMade)
+        return false
+
+
+
+    true
+}
+
+class Action {
+    def make
+    def move
+}
+
+//TYPE 0 random walk
+def chooseAction(world, nodeList, movesMade, movesAvailable){
+    def a = new Action()
+    if(movesAvailable){
+        //choose the move to make or unmake
+
+        //do i need to unmake
+        def lastMove = movesMade[movesMade-1]
+
+        //if visits to last move are less than all available roll back
+        boolean rollBack = true;
+        movesAvailable.each {
+            rollBack = rollBack && it.count > lastMove.count
+        }
+        
+        if(rollBack){
+            a.make = false;
+
+            a.move = movesMade[movesMade-1];
+        }else{
+            a.make = true;
+
+            def cheapest = null 
+            //pick 'cheapest'
+            movesAvailable.each {
+                if(!cheapest){
+                    cheapest = it
+                }else{
+                    if(it.count < cheapest.count){
+                        cheapest = it;
+                    } //else if(it.count == cheapest.count){
+                        //roll dice and replace
+                        //cheapest = it;
+                    //}
+                }
+            }
+        }
+    }else{
+        //somewhere we made a bad choice and got ourselves in a soft lock
+        //lets roll back
+        a.make = false;
+
+        a.move = movesMade[movesMade-1];
+    }
+
+
+    a
+}
+
+def solve(world, nodeList, movesMade, movesAvailable){
+    def round = 0;
+    while(!hasWon(world, nodeList, movesMade, movesAvailable)){
+        
+        def action = chooseAction(world, nodeList, movesMade, movesAvailable)
+
+        round ++;
     }
 }
 /**
@@ -433,15 +552,6 @@ def forEachAsArray(world , callable){
 }
 
 
-def calcValidMoves(nodeList){
-
-}
-
-
-
-
-
-
 /**
 * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
 * Args
@@ -460,13 +570,15 @@ validate(world)
 def nodeList = forEachAsArray(world, SharedClosures.I);
 buildLinks(nodeList, world)
 
+def movesAvailable = calcValidFirstMoves(nodeList)
+def movesMade = [] as List
+
+println 'Initial Moves'
+movesAvailable.each {
+    println it
+}
+
+solve(world, nodeList, movesMade, movesAvailable)
+
 
 println '- - - -'
-
-
-
-
-
-
-
-
