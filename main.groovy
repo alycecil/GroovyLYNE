@@ -42,6 +42,7 @@ A>2>A
 
 import groovy.transform.Canonical
 import groovy.transform.TupleConstructor
+import groovy.transform.EqualsAndHashCode
 
 class SharedClosures {
     /*
@@ -71,13 +72,16 @@ class Node {
     def y
     int count
 
+    def rootMove
+
     def isComplete(){
         if(count>1){
-            throw new IllegalStateException("Too many hits, bug in code!")
+            throw new IllegalStateException("$this@($x,$y) Too many hits [$count], bug in code!")
         }
         
         count == 1
     }
+
 }
 
 @TupleConstructor(includeSuperProperties=true) 
@@ -87,7 +91,7 @@ class CommonNode extends Node {
 
     def isComplete(){
         if(count>needs){
-            throw new IllegalStateException("Too many hits, bug in code!")
+            throw new IllegalStateException("$this@($x,$y) Too many hits [$count], bug in code!")
         }
 
         count == needs
@@ -106,7 +110,7 @@ class Move {
     int count = 0
     def invalidatedBy
     def invalidates
-    def invalidatesOnComplete
+    def invalidatedOnComplete
     Node source, destination;
 
     String toString(){
@@ -118,6 +122,9 @@ class Move {
 }
 
 class DiagonalMove extends Move {
+}
+
+class RootMove extends Move {
 }
 
 class Action {
@@ -267,7 +274,8 @@ def createInvalidationLinks(Node node, world){
         it.moves.each {
             reverse ->
 
-            if(reverse.destination == me){
+            if(reverse.destination.is(me)){
+                println "$move | $reverse"
                 move.invalidates << reverse
             }
         }
@@ -288,7 +296,7 @@ def createInvalidationLinks(Node node, world){
                 point1.moves?.each {
                     dm ->
                     println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
-                    if(dm.destination == point2){
+                    if(dm.destination.is(point2)){
                         move.invalidates << dm
                     }
                 }
@@ -296,7 +304,7 @@ def createInvalidationLinks(Node node, world){
                 point2.moves?.each {
                     dm ->
                     println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
-                    if(dm.destination == point1){
+                    if(dm.destination.is(point1)){
                         move.invalidates << dm
                     }
                 }
@@ -313,6 +321,8 @@ def createInvalidationLinks(Node node, world){
                 move.invalidates << mv;
             }
         }
+
+
     }
 }
 
@@ -364,8 +374,36 @@ def buildLinks(nodeList, world){
     println "Total Moves in world $tot"
 }
 
+def completeNode(me, move, nodeList, movesAvailable){
+    println "completed ${me}"
+    move.invalidatedOnComplete = []
+    //calc all i completed
+    nodeList.each {
+        node ->
+        node.moves.each {
+            if(it.destination.is(me)){
+                println " remove $it"
+                move.invalidatedOnComplete << it.destination
 
-def makeMove(Move move, movesMade, movesAvailable){
+                if(it.invalidatedBy==null){
+                    it.invalidatedBy = []
+                }
+                it.invalidatedBy << move
+
+                movesAvailable.remove(it)
+            }
+        }
+    }
+}
+
+def makeMove(Move move, movesMade, movesAvailable, nodeList){
+    //for reverse tree traveral later, and to help see if we won
+    move.destination.rootMove = move
+
+    if(!move.source.rootMove){
+        move.source.count++
+        completeNode(move.source, new RootMove(destination: move.source), nodeList, movesAvailable)
+    }
 
     movesAvailable.remove(move)
     movesMade << move
@@ -375,13 +413,16 @@ def makeMove(Move move, movesMade, movesAvailable){
     }
     move.invalidatedBy << move;
 
-    move.invalidates?.each{
+    println 'Invalidating'
+    move.invalidates.each{
+        println "$it"
         if(it.invalidatedBy==null){
             it.invalidatedBy = []
         }
         it.invalidatedBy << move;
         movesAvailable.remove(it)
     }
+    println ''
 
     //add all 
     move.destination.moves?.each{
@@ -390,14 +431,26 @@ def makeMove(Move move, movesMade, movesAvailable){
         }
     }
 
+
+    if(move.destination.isComplete()){
+        completeNode(move.destination, move, nodeList, movesAvailable)
+    }
+
     move.count ++
     move.destination.count ++
 }
 
-def unmakeMove(Move move, movesMade, movesAvailable){
+def unmakeMove(Move move, movesMade, movesAvailable, nodeList){
     if(movesMade[movesMade.size-1]!=move){
         throw new IllegalStateException("Cannot Reverse any but last move");
     }
+
+    move.destination.rootMove = null
+
+    if(!move.source.rootMove){
+        move.source.count--
+    }
+
 
     movesMade.remove(movesMade.size-1)
 
@@ -513,14 +566,17 @@ def solve(world, nodeList, movesMade, movesAvailable){
         println "$round:$action"
 
         if(action.make){
-            makeMove(action.move, movesMade, movesAvailable)
+            makeMove(action.move, movesMade, movesAvailable, nodeList)
             
         }else{
-            unmakeMove(action.move, movesMade, movesAvailable)
+            unmakeMove(action.move, movesMade, movesAvailable, nodeList)
         }
 
         round ++
     }
+
+    println 'This would be the victory dance!'
+    println "$movesMade"
 }
 
 
