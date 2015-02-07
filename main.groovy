@@ -69,13 +69,29 @@ class Node {
     def moves
     def x
     def y
+    int count
+
+    def isComplete(){
+        if(count>1){
+            throw new IllegalStateException("Too many hits, bug in code!")
+        }
+        
+        count == 1
+    }
 }
 
 @TupleConstructor(includeSuperProperties=true) 
 @Canonical(excludes= 'neighbors')
-class CommonNode extends Node{
-    short count = 0
-    short hits
+class CommonNode extends Node {
+    int needs = 0
+
+    def isComplete(){
+        if(count>needs){
+            throw new IllegalStateException("Too many hits, bug in code!")
+        }
+
+        count == needs
+    }
 }
 
 @TupleConstructor(includeSuperProperties=true) 
@@ -87,19 +103,34 @@ class SingleNode extends Node {
 }
 
 class Move {
-    def count = 0
+    int count = 0
     def invalidatedBy
     def invalidates
+    def invalidatesOnComplete
     Node source, destination;
 
     String toString(){
         def s = "${this.class} between ($source(${source.x},${source.y})) "
         s += "and ($destination (${destination.x},${destination.y}))"
+
+        s
     }
 }
 
 class DiagonalMove extends Move {
 }
+
+class Action {
+    def make
+    def move
+
+    String toString(){
+        def s = "${this.class}($make) $move"
+
+        s
+    }
+}
+
 
 def buildWorld(def argFile){
     def worldText = []
@@ -129,7 +160,7 @@ def buildWorld(def argFile){
             if(Character.isDigit( val )){
                 val = Integer.parseInt( "$val" )
                 if(val>0){
-                    node = new CommonNode(count: val, hits: 0)
+                    node = new CommonNode(needs: val)
                 }
             } else {
                 //
@@ -353,7 +384,7 @@ def makeMove(Move move, movesMade, movesAvailable){
     }
 
     //add all 
-    moves.destination.movesAvailable?.each{
+    move.destination.moves?.each{
         if(!it.invalidatedBy && !movesAvailable.contains(it)){
             movesAvailable.add(it);
         }
@@ -368,7 +399,7 @@ def unmakeMove(Move move, movesMade, movesAvailable){
         throw new IllegalStateException("Cannot Reverse any but last move");
     }
 
-    movesMade[movesMade.size-1] = null
+    movesMade.remove(movesMade.size-1)
 
     move.invalidatedBy = null
 
@@ -408,40 +439,42 @@ boolean hasWon(world, nodeList, movesMade, movesAvailable){
         return false
 
 
+    boolean hasWon = true
 
-    true
-}
+    nodeList.each{
+        node ->
 
-class Action {
-    def make
-    def move
+        hasWon = hasWon && node.isComplete()
+    }
+
+    hasWon
 }
 
 //TYPE 0 random walk
 def chooseAction(world, nodeList, movesMade, movesAvailable){
     def a = new Action()
+    boolean rollBack = true;
     if(movesAvailable){
         //choose the move to make or unmake
-
-        //do i need to unmake
-        def lastMove = movesMade[movesMade-1]
-
         //if visits to last move are less than all available roll back
-        boolean rollBack = true;
-        movesAvailable.each {
-            rollBack = rollBack && it.count > lastMove.count
+        
+        if(movesMade){
+            def lastMove = movesMade[movesMade.size-1] 
+            movesAvailable.each {
+                rollBack = rollBack && (it.count > lastMove?.count)
+            }
+        }else{
+            rollBack = false;
         }
         
-        if(rollBack){
-            a.make = false;
-
-            a.move = movesMade[movesMade-1];
-        }else{
+        if(!rollBack){
             a.make = true;
 
             def cheapest = null 
             //pick 'cheapest'
+            println 'available moves'
             movesAvailable.each {
+                println "      : ${it}@${it.count}"
                 if(!cheapest){
                     cheapest = it
                 }else{
@@ -453,15 +486,20 @@ def chooseAction(world, nodeList, movesMade, movesAvailable){
                     //}
                 }
             }
+            
+            a.move = cheapest
         }
-    }else{
-        //somewhere we made a bad choice and got ourselves in a soft lock
-        //lets roll back
-        a.make = false;
-
-        a.move = movesMade[movesMade-1];
     }
 
+    if(!a.move){
+        a.make = false
+
+        a.move = movesMade[movesMade.size-1]
+    }
+
+    if(!a.move){
+        throw new IllegalStateException("$a : $movesMade")
+    }
 
     a
 }
@@ -472,9 +510,21 @@ def solve(world, nodeList, movesMade, movesAvailable){
         
         def action = chooseAction(world, nodeList, movesMade, movesAvailable)
 
-        round ++;
+        println "$round:$action"
+
+        if(action.make){
+            makeMove(action.move, movesMade, movesAvailable)
+            
+        }else{
+            unmakeMove(action.move, movesMade, movesAvailable)
+        }
+
+        round ++
     }
 }
+
+
+
 /**
 * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
 * 
@@ -582,3 +632,11 @@ solve(world, nodeList, movesMade, movesAvailable)
 
 
 println '- - - -'
+
+
+
+
+
+
+
+
