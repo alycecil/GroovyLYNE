@@ -40,10 +40,21 @@ A>2>A
 
 */
 
+/*
+rev 2
+- Does not support common nodes yet
+*/
+
 import groovy.transform.Canonical
 import groovy.transform.TupleConstructor
 import groovy.transform.EqualsAndHashCode
 
+
+
+
+/**
+* identity
+*/
 class SharedClosures {
     /*
     * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
@@ -61,61 +72,93 @@ class SharedClosures {
         world[y][x]
     }
 
+	//static def seed = 1424834035623l
+	static def seed = System.currentTimeMillis()
+	static def random = new java.util.Random(seed)
 
+	static def debug = false
 }
 
+
+def forEachAsArray(world , callable){
+    def result = []
+    (0..world.size-1).each {
+        y -> 
+        (0..world[y].size-1).each {
+            x -> 
+            def res = callable(world, x , y)
+            if(res)
+                result << res
+        }
+    }
+
+    result
+}
+
+
 @Canonical(excludes= 'neighbors')
-class Node {
-    def neighbors
-    def moves
+abstract class Node {
+    def movesFrom
+    def movesTo
+
     def x
     def y
-    int count
+    int count = 0
+    int needs = 1
 
-    def rootMove
+    def neighbors
 
     def isComplete(){
         if(count>1){
             throw new IllegalStateException("$this@($x,$y) Too many hits [$count], bug in code!")
         }
         
-        count == 1
+        count == needs
     }
 
+    def isValid(){
+    	//println "Node.isValid ${needs>0}+${true&&movesTo}+${true&&movesFrom}"
+    	return needs>0&&movesTo&&movesFrom;
+    }
 }
 
 @TupleConstructor(includeSuperProperties=true) 
 @Canonical(excludes= 'neighbors')
 class CommonNode extends Node {
-    int needs = 0
 
-    def isComplete(){
-        if(count>needs){
-            throw new IllegalStateException("$this@($x,$y) Too many hits [$count], bug in code!")
-        }
-
-        count == needs
-    }
 }
 
 @TupleConstructor(includeSuperProperties=true) 
 @Canonical(excludes= 'neighbors,otherRoot')
 class SingleNode extends Node {
-    char type
-    boolean start
-    def otherRoot
+    def type
+
+    def isValid(){
+    	//println "SingleNode.isValid ${type!=null}"
+    	return super.isValid()&&type!=null
+    }
+}
+
+@TupleConstructor(includeSuperProperties=true) 
+@Canonical(excludes= 'neighbors,twin')
+class RootNode extends SingleNode {
+    def twin
+
+    def isValid(){
+    	return super.isValid()&&twin!=null
+    }
 }
 
 class Move {
-    int count = 0
     def invalidatedBy
     def invalidates
-    def invalidatedOnComplete
+    def invalidatedConditionally
+
     Node source, destination;
 
     String toString(){
-        def s = "${this.class} between ($source(${source.x},${source.y})) "
-        s += "and ($destination (${destination.x},${destination.y}))"
+        def s = "${this.class.getName()} from ($source(${source.x},${source.y})) "
+        s += "to ($destination (${destination.x},${destination.y}))"
 
         s
     }
@@ -124,10 +167,7 @@ class Move {
 class DiagonalMove extends Move {
 }
 
-class RootMove extends Move {
-}
-
-class Action {
+class Action{
     def make
     def move
 
@@ -138,6 +178,10 @@ class Action {
     }
 }
 
+
+/*******************************
+GENERIC METHODS TO BUILD MY WORLD
+*/
 
 def buildWorld(def argFile){
     def worldText = []
@@ -153,6 +197,8 @@ def buildWorld(def argFile){
     }
 
     def world = []
+
+    def starts = [:]
 
     //first pass, build
     (0..worldText.size-1).each {
@@ -171,7 +217,23 @@ def buildWorld(def argFile){
                 }
             } else {
                 //
-                node = new SingleNode(type: val.toLowerCase(), start: Character.isUpperCase( val ) )
+                if(Character.isUpperCase( val )){
+					node = new RootNode()
+					node.type= val.toLowerCase() 
+
+					def twin = starts.get(val)
+                	if(twin==null){
+						starts.put(val,node)
+
+						if(SharedClosures.debug) println "Twin stored for $node of type $val"
+            		}else{
+                		twin.twin = node	
+                		node.twin = twin	
+                		if(SharedClosures.debug) println "Twin set for $node & $twin of type $val"
+            		}
+                }else{
+                	node = new SingleNode(type: val.toLowerCase() )
+           		}
             }
 
             if(node!=null){
@@ -185,414 +247,9 @@ def buildWorld(def argFile){
 
     }
 
-
-    def makeNeighbors = {
-        w, mx, my, m_x, m_y ->
-        if(w[my][mx].neighbors == null){
-            w[my][mx].neighbors = []
-            println ''
-            println 'working on ($mx, $my)'
-        }
-
-        w[my][mx].neighbors << w[m_y][m_x] 
-
-        print "${w[my][mx].neighbors.size} "
-    }
-    
-    //next pass build neighbors in each node
-    forEachNeighbor(world, makeNeighbors)
-    println ''
-
     world
 }
 
-def validate(world){
-    def cnt = [:]
-    (0..world.size-1).each {
-        y -> 
-
-        (0..world[y].size-1).each {
-            x -> 
-            //
-            if(world[y][x] instanceof SingleNode){
-
-                if(world[y][x].start){
-
-                    if(!cnt[world[y][x].type]){
-                        cnt[world[y][x].type]=[]
-                        cnt[world[y][x].type] << world[y][x]
-                    }else if(cnt[world[y][x].type].size==1){
-                        cnt[world[y][x].type] << world[y][x]
-                        //create cross link
-                        cnt[world[y][x].type][0].otherRoot =cnt[world[y][x].type][1]
-                        cnt[world[y][x].type][1].otherRoot =cnt[world[y][x].type][0]
-                        
-                    }else{
-                        throw IllegalStateException("too many end points for ${world[y][x].type}")
-                    }
-                }
-            }
-        }
-    }
-
-    cnt.each {
-        if(it.value.size != 2){
-            throw new IllegalStateException("start without end for ${it.key}")
-        }else{
-            it.value.each{
-                println "Linked pairs : $it & ${it.otherRoot}"
-            }
-        }
-    }
-}
-
-def createMoveBetween(Node me, Node it, world){
-    if(!me.moves){
-        me.moves = []
-    }
-
-    if(me.x!=it.x && me.y!=it.y){
-        //diagonal move
-        def move = new DiagonalMove(source: me, destination: it)
-
-        me.moves << move
-    }else{
-        me.moves << new Move(source: me, destination: it)
-    }
-    
-}
-
-def createInvalidationLinks(Node node, world){
-    node?.moves?.each {
-        move ->
-        move.invalidates = []
-
-        def me = move.source;
-        def it = move.destination;
-
-        //remove opposite
-        it.moves.each {
-            reverse ->
-
-            if(reverse.destination.is(me)){
-                println "$move | $reverse"
-                move.invalidates << reverse
-            }
-        }
-
-        if(move instanceof DiagonalMove){
-            println 'DIAG'
-            print " ME (${me.x},${me.y}) to (${it.x},${it.y}) "
-            
-
-            def point1 = world[me.y][it.x]
-            def point2 = world[it.y][me.x]
-
-            if(point1==null){
-                println "counterpoints at ${it.x},${me.y} is null"
-            }else if(point2==null){
-                println "counterpoints at ${me.x},${it.y} is null"
-            }else{
-                point1.moves?.each {
-                    dm ->
-                    println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
-                    if(dm.destination.is(point2)){
-                        move.invalidates << dm
-                    }
-                }
-
-                point2.moves?.each {
-                    dm ->
-                    println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
-                    if(dm.destination.is(point1)){
-                        move.invalidates << dm
-                    }
-                }
-            }
-        }
-
-        //link root nodes
-        //TODO move up and make shared; if becomes performance issue.
-        if(me instanceof SingleNode && me.start){
-            println "CommonRoot[$me.type] : "
-            me.otherRoot.moves.each {
-                mv ->
-                println "     $mv"
-                move.invalidates << mv;
-            }
-        }
-
-
-    }
-}
-
-def buildLinks(nodeList, world){
-    def tot = 0;
-    nodeList.each {
-        node -> 
-        //
-        def myClosure
-        if(node instanceof CommonNode){
-            myClosure = {
-                it, me ->
-                if(it!=null){
-                    print '- adding link c'
-                    createMoveBetween(me, it, world)
-                }
-            }
-        }else if(node instanceof SingleNode){
-            myClosure = {
-                it, me ->
-
-                if(it instanceof CommonNode){
-                    print '- adding link sc'
-                    createMoveBetween(me, it, world)
-                }else if(it instanceof SingleNode){
-                    if((it as SingleNode).type == me.type){
-                        print '- adding link ss'
-                        createMoveBetween(me, it, world)
-                    }
-                }
-            }
-        }
-
-        println "Neighbors of $node : "
-        forEachNeighborofNode(node) {
-            print it
-            myClosure(it, node)
-            println ''
-            
-        }
-        println "moves : ${node?.moves?.size}"
-        tot += node?.moves?.size
-    }
-
-    nodeList.each {
-        node ->
-        createInvalidationLinks(node, world)
-    }
-    println "Total Moves in world $tot"
-}
-
-def completeNode(me, move, nodeList, movesAvailable){
-    println "completed ${me}"
-    move.invalidatedOnComplete = []
-    //calc all i completed
-    nodeList.each {
-        node ->
-        node.moves.each {
-            if(it.destination.is(me)){
-                println " remove $it"
-                move.invalidatedOnComplete << it.destination
-
-                if(it.invalidatedBy==null){
-                    it.invalidatedBy = []
-                }
-                it.invalidatedBy << move
-
-                movesAvailable.remove(it)
-            }
-        }
-    }
-}
-
-def makeMove(Move move, movesMade, movesAvailable, nodeList){
-    //for reverse tree traveral later, and to help see if we won
-    move.destination.rootMove = move
-
-    if(!move.source.rootMove){
-        move.source.count++
-        completeNode(move.source, new RootMove(destination: move.source), nodeList, movesAvailable)
-    }
-
-    movesAvailable.remove(move)
-    movesMade << move
-
-    if(!move.invalidatedBy){
-        move.invalidatedBy = []
-    }
-    move.invalidatedBy << move;
-
-    println 'Invalidating'
-    move.invalidates.each{
-        println "$it"
-        if(it.invalidatedBy==null){
-            it.invalidatedBy = []
-        }
-        it.invalidatedBy << move;
-        movesAvailable.remove(it)
-    }
-    println ''
-
-    //add all 
-    move.destination.moves?.each{
-        if(!it.invalidatedBy && !movesAvailable.contains(it)){
-            movesAvailable.add(it);
-        }
-    }
-
-
-    if(move.destination.isComplete()){
-        completeNode(move.destination, move, nodeList, movesAvailable)
-    }
-
-    move.count ++
-    move.destination.count ++
-}
-
-def unmakeMove(Move move, movesMade, movesAvailable, nodeList){
-    if(movesMade[movesMade.size-1]!=move){
-        throw new IllegalStateException("Cannot Reverse any but last move");
-    }
-
-    move.destination.rootMove = null
-
-    if(!move.source.rootMove){
-        move.source.count--
-    }
-
-
-    movesMade.remove(movesMade.size-1)
-
-    move.invalidatedBy = null
-
-    movesAvailable << move
-
-    move.invalidates?.each{
-        if(it.invalidatedBy){
-            it.invalidatedBy?.remove(move);
-        }
-
-        if(!it.invalidatedBy){
-            movesAvailable << it
-        }
-
-    }
-
-    move.destination.count --
-}
-
-
-def calcValidFirstMoves(nodeList){
-    def result = [] as Set
-
-    nodeList.each {
-        if(it instanceof SingleNode && it.start){
-            it.moves.each {
-                result << it
-            }
-        }
-    }
-
-    result
-}
-
-boolean hasWon(world, nodeList, movesMade, movesAvailable){
-    if(!movesMade)
-        return false
-
-
-    boolean hasWon = true
-
-    nodeList.each{
-        node ->
-
-        hasWon = hasWon && node.isComplete()
-    }
-
-    hasWon
-}
-
-//TYPE 0 random walk
-def chooseAction(world, nodeList, movesMade, movesAvailable){
-    def a = new Action()
-    boolean rollBack = true;
-    if(movesAvailable){
-        //choose the move to make or unmake
-        //if visits to last move are less than all available roll back
-        
-        if(movesMade){
-            def lastMove = movesMade[movesMade.size-1] 
-            movesAvailable.each {
-                rollBack = rollBack && (it.count > lastMove?.count)
-            }
-        }else{
-            rollBack = false;
-        }
-        
-        if(!rollBack){
-            a.make = true;
-
-            def cheapest = null 
-            //pick 'cheapest'
-            println 'available moves'
-            movesAvailable.each {
-                println "      : ${it}@${it.count}"
-                if(!cheapest){
-                    cheapest = it
-                }else{
-                    if(it.count < cheapest.count){
-                        cheapest = it;
-                    } //else if(it.count == cheapest.count){
-                        //roll dice and replace
-                        //cheapest = it;
-                    //}
-                }
-            }
-            
-            a.move = cheapest
-        }
-    }
-
-    if(!a.move){
-        a.make = false
-
-        a.move = movesMade[movesMade.size-1]
-    }
-
-    if(!a.move){
-        throw new IllegalStateException("$a : $movesMade")
-    }
-
-    a
-}
-
-def solve(world, nodeList, movesMade, movesAvailable){
-    def round = 0;
-    while(!hasWon(world, nodeList, movesMade, movesAvailable)){
-        
-        def action = chooseAction(world, nodeList, movesMade, movesAvailable)
-
-        println "$round:$action"
-
-        if(action.make){
-            makeMove(action.move, movesMade, movesAvailable, nodeList)
-            
-        }else{
-            unmakeMove(action.move, movesMade, movesAvailable, nodeList)
-        }
-
-        round ++
-    }
-
-    println 'This would be the victory dance!'
-    println "$movesMade"
-}
-
-
-
-/**
-* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
-* 
-* Helpers that run through the 2d array in different ways   *
-* 
-* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 
-*/
-def forEachNeighborofNode(Node node, callThis){
-    node?.neighbors?.each {
-        callThis(it)
-    }
-}
 
 def forEachNeighborOfPosition(world, x, y, callThis){
     if(world[y][x]!=null){
@@ -626,37 +283,304 @@ def forEachNeighbor(world, callThis){
     }
 }
 
-def forEachAsMap(world , callable){
-    def result = []
-    (0..world.size-1).each {
-        y -> 
-        def resLine = []
-        (0..world[y].size-1).each {
-            x -> 
-            resLine << callable(world, x , y);
+void buildNeighbors(world){
+	def makeNeighbors = {
+        w, mx, my, m_x, m_y ->
+        if(w[my][mx].neighbors == null){
+            w[my][mx].neighbors = []
+            if(SharedClosures.debug) println ''
+            if(SharedClosures.debug) println "working on ($mx, $my)"
         }
 
-        result << resLine
-    }
+        w[my][mx].neighbors << w[m_y][m_x] 
 
-    result
+        if(SharedClosures.debug) print "${w[my][mx].neighbors.size} "
+    }
+    
+    //next pass build neighbors in each node
+    forEachNeighbor(world, makeNeighbors)
+    if(SharedClosures.debug) println ''
 }
 
-def forEachAsArray(world , callable){
-    def result = []
-    (0..world.size-1).each {
-        y -> 
-        (0..world[y].size-1).each {
-            x -> 
-            def res = callable(world, x , y)
-            if(res)
-                result << res
+def buildMoves(world){
+	def fog = {
+		me->
+			me.movesTo = [] as Set
+			me.movesFrom = [] as Set
+			def moves = [] as List
+			me?.neighbors?.each {
+				 if(me.x!=it.x && me.y!=it.y){
+			        //diagonal move
+			        def move = new DiagonalMove(source: me, destination: it)
+
+			        moves << move
+			    }else{
+			        moves << new Move(source: me, destination: it)
+			    }
+			}
+
+			moves
+		} << SharedClosures.I
+
+	def moves = []
+	forEachAsArray(world, fog).each {
+		moves.addAll(it)
+	}
+
+	moves.each{
+		it.invalidates = [] as Set
+		it.invalidatedBy = [] as List
+		it.source.movesFrom << it
+		it.destination.movesTo << it
+	}
+
+	moves.each{
+		//no other move can come from here (No common nodes)
+		it.source.movesFrom.each {
+			me ->
+				it.invalidates << me
+		}
+
+		if(it.source instanceof RootNode){
+			it.source.movesTo.each {
+				me ->
+				it.invalidates << me
+			}
+
+			//my twins from moves are gone too
+	    	it.source.twin.movesFrom.each {
+	    		me ->
+	    		it.invalidates << me
+	    	}
+		}
+
+		if(it.destination instanceof RootNode){
+			it.destination.movesTo.each {
+				me ->
+				it.invalidates << me
+			}
+
+			it.destination.twin.movesTo.each{
+				me ->
+	    		it.invalidates << me
+			}
+		}
+
+		//find reverse
+		it.destination.movesFrom.each{
+			reverse ->
+				if(reverse.destination == it.source){
+					it.invalidates << reverse
+				}
+		}
+
+		if(it instanceof DiagonalMove){
+			if(SharedClosures.debug) println "removing paired diags for $it"
+			def point1 = world[it.source.y][it.destination.x]
+            def point2 = world[it.destination.y][it.source.x]
+
+            if(point1==null){
+                if(SharedClosures.debug) println "counterpoints at ${it.x},${me.y} is null"
+            }else if(point2==null){
+                if(SharedClosures.debug) println "counterpoints at ${me.x},${it.y} is null"
+            }else{
+                point1.movesFrom?.each {
+                    dm ->
+                    if(dm.destination.is(point2)){
+                    	if(SharedClosures.debug) println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
+                        it.invalidates << dm
+                    }
+                }
+
+                point2.movesFrom?.each {
+                    dm ->
+                    if(dm.destination.is(point1)){
+                    	if(SharedClosures.debug) println "Diag : (${dm.source.x},${dm.source.y}) to (${dm.destination.x},${dm.destination.y})"
+                        it.invalidates << dm
+                    }
+                }
+            }
+		}
+	}
+
+	moves
+}
+
+/*********************************
+Actual Game
+*/
+
+boolean hasWon(nodeList){
+    boolean hasWon = true
+
+    nodeList.each{
+        node ->
+
+        hasWon = hasWon && node.isComplete()
+    }
+
+    hasWon
+}
+
+def makeMove(move, movesMade, movesAvailable, nodeList){
+	movesAvailable.remove(move)
+    movesMade << move
+
+   
+    if(move.source instanceof RootNode){
+    	//I am complete when you leave me
+    	move.source.count++
+
+    	if(!move.source.isComplete()){
+    		throw new IllegalStateException('Bug! root not complete on exit')
+    	}
+    }
+
+    //make all as invalidated
+    move.invalidates.each{
+    	it.invalidatedBy << move
+
+    	movesAvailable.remove(it)
+    }
+
+    move.destination.count ++
+
+    if(move.destination.isComplete()){
+    	
+    	move.invalidatedConditionally = [] as Set
+
+    	move.destination.movesTo.each{
+
+    		move.invalidatedConditionally << it
+    	}
+
+    	if(move.destination instanceof RootNode){
+    		if(!move.destination.isComplete()){
+    			throw new IllegalStateException('Bug! root not complete on enter')
+    		}
+   		}
+    }
+
+	move.invalidatedConditionally.each{
+    	it.invalidatedBy << move
+
+    	movesAvailable.remove(it)
+    }
+
+
+    if(SharedClosures.debug) println "moves ${movesAvailable.size()}"
+    if(SharedClosures.debug) movesAvailable.each {
+    	println "     $it"
+    }
+}
+
+def unmakeMove(move, movesMade, movesAvailable, nodeList){
+	movesMade.remove(move)
+	movesAvailable << move
+
+	move.invalidatedConditionally?.each {
+		it.invalidatedBy.remove(move)
+
+		if(!it.invalidatedBy){
+			if(SharedClosures.debug) println "re-add-cond $it"
+			movesAvailable << it
+		}
+	}
+	move.invalidatedConditionally = null
+
+	move.destination.count--
+
+	move.invalidates?.each{
+    	it.invalidatedBy.remove(move)
+
+    	if(!it.invalidatedBy){
+    		if(SharedClosures.debug) println "re-add      $it"
+			movesAvailable << it
+		}
+    }
+
+    if(move.source instanceof RootNode){
+    	move.source.count--
+    }
+}
+
+def solve(world, rootMoves){
+	def nodeList = forEachAsArray(world, SharedClosures.I)
+	def movesMade = [] as List
+	def movesAvailable = [] as Set
+    def round = 0;
+    def lastAction = null
+
+	movesAvailable.addAll(rootMoves);
+
+    while(!hasWon(nodeList)){
+        
+        def action = chooseAction(world, nodeList, movesMade, movesAvailable, lastAction)
+
+        println "$round:$action"
+
+        if(action.make){
+            makeMove(action.move, movesMade, movesAvailable, nodeList)
+            
+        }else{
+            unmakeMove(action.move, movesMade, movesAvailable, nodeList)
         }
+
+        round ++
+
+        lastAction = action
     }
 
-    result
+    println 'This would be the victory dance!'
+    println "$movesMade"
 }
 
+
+/**
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+* The interesting method
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+*/
+
+def chooseAction(world, nodeList, movesMade, movesAvailable, lastAction){
+	def SCALE = 100;
+	def a = new Action();
+
+	if(movesAvailable){
+		//do i step forward or back?
+		def makeMove = true;
+
+		if(movesMade){
+			if(SharedClosures.random.nextInt()%1000>=SCALE*movesAvailable.size()/movesMade.size()){
+				makeMove = false;
+			}
+		}
+
+		if(makeMove){
+
+			a.make = true
+			def ind = Math.abs(SharedClosures.random.nextInt()%movesAvailable.size())
+			a.move = movesAvailable[ind]
+
+			println "Choosing $ind of ${movesAvailable.size()}"
+
+			//no looping
+			if(lastAction&&movesMade&&a.move==lastAction.move){
+				println 'NO LOOPING'
+				a.move = null
+			}
+		}
+	}//else{//roll back}
+
+	if(!a.move){
+		println 'Roll back'
+        a.make = false
+
+        a.move = movesMade[movesMade.size-1]
+    }
+
+    a
+}
 
 /**
 * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
@@ -671,28 +595,41 @@ def argFile = 'C:\\Users\\Courtney Cecil\\Documents\\groovy\\world.txt'//this.ar
 * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
 */
 def world = buildWorld(argFile)
-validate(world)
+buildNeighbors(world)
+def moves = buildMoves(world)
+println 'Build Complete'
 
-def nodeList = forEachAsArray(world, SharedClosures.I);
-buildLinks(nodeList, world)
 
-def movesAvailable = calcValidFirstMoves(nodeList)
-def movesMade = [] as List
+//composition
+println '---All nodes---'
+def mud =  {println it} << SharedClosures.I
+forEachAsArray(world,mud)
 
-println 'Initial Moves'
-movesAvailable.each {
-    println it
+
+//
+println '---All moves---'
+def rootMoves = []
+moves.each{
+	
+
+	if(it?.source instanceof RootNode){
+		rootMoves << it
+
+		println "*$it*"
+	}else {
+		println it
+	}
 }
 
-solve(world, nodeList, movesMade, movesAvailable)
+println '--- Valid? ---'
+mud = {if(!it.isValid()){throw new IllegalStateException("$it@(${it.x},${it.y}) is not valid")}} << SharedClosures.I
+forEachAsArray(world,mud)
+if(!rootMoves){
+	throw new IllegalStateException('No root moves');
+}
+println 'Yes.'
+println '---------------'
+println "Seed : ${SharedClosures.seed}"
 
-
-println '- - - -'
-
-
-
-
-
-
-
+solve(world, moves)
 
